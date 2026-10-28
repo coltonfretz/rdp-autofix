@@ -1,0 +1,44 @@
+#!/bin/bash
+# rdp-guard: keep xrdp permanently out of the way of gnome-remote-desktop.
+#
+# WHY this exists: a machine can end up with two RDP servers installed. xrdp
+# (system daemon, spawns a fresh login per connection; on my machine its PAM
+# setup failed with "user does not exist") and gnome-remote-desktop (shares the live autologin session,
+# which is the one we actually want). Both want TCP 3389. Whichever binds first
+# wins, and gnome-remote-desktop silently falls back to 3390 when it loses.
+#
+# Masking xrdp fixes that, but in practice the fix kept "not holding" after
+# updates/reboots. So instead of trusting a one-time mask, this script
+# re-asserts it from two places:
+#   1. rdp-guard.service at boot, ordered Before=xrdp.service, so xrdp's start
+#      job gets cancelled before it can grab the port.
+#   2. An apt DPkg::Post-Invoke hook, so an upgrade that unmasks/re-enables
+#      xrdp is undone immediately instead of waiting for the next reboot.
+#
+# Runs as root. Idempotent: does nothing if both units are already masked or
+# the xrdp package is gone (purging xrdp is the cleaner long-term fix; this
+# script is harmless if you do).
+
+set -u
+
+for unit in xrdp.service xrdp-sesman.service; do
+    # "masked" = already handled. Empty / "not-found" = package not installed.
+    # Anything else (enabled, disabled, static, masked-runtime...) means xrdp
+    # could still be started by something, so re-mask it.
+    state=$(systemctl is-enabled "$unit" 2>/dev/null)
+    case "$state" in
+        masked | not-found | "") continue ;;
+    esac
+
+    # --now also stops it. At boot that replaces xrdp's pending start job
+    # (a stop job supersedes a queued start), which is the whole point of
+    # running Before=xrdp.service. xrdp-sesman is masked too: it has no use
+    # without xrdp and is what keeps the xrdp stack "half alive".
+    if systemctl mask --now "$unit" >/dev/null 2>&1; then
+        logger -t rdp-guard "$unit was '$state'; stopped and masked it so gnome-remote-desktop keeps port 3389"
+    else
+        logger -t rdp-guard -p user.err "$unit was '$state' but masking it FAILED"
+    fi
+done
+
+exit 0

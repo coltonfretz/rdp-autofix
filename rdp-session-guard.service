@@ -1,0 +1,15 @@
+# Login-time half of the RDP fix. See ~/.local/bin/rdp-session-guard for the why.
+# Wanted by gnome-session.target (same target that pulls in gnome-remote-desktop)
+# so it runs on every autologin, after grd has had its chance to bind.
+[Unit]
+Description=Make sure GNOME Remote Desktop is on port 3389 with readable credentials
+After=gnome-remote-desktop.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/rdp-session-guard
+# Script waits up to ~90s for grd to bind plus ~60s for 3389 to free up.
+TimeoutStartSec=4min
+
+[Install]
+WantedBy=gnome-session.target

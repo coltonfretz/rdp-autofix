@@ -1,0 +1,5 @@
+// Re-assert the xrdp mask after every dpkg run (apt upgrade/install/remove).
+// WHY: package updates are what kept un-doing the fix. Catching it here means
+// an upgrade can't leave xrdp armed to grab port 3389 on the next reboot.
+// "|| true" so a guard problem can never make apt report a failed upgrade.
+DPkg::Post-Invoke { "if [ -x /usr/local/sbin/rdp-guard ]; then /usr/local/sbin/rdp-guard; fi || true"; };

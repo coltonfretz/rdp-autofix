@@ -1,0 +1,15 @@
+# Boot-time half of the RDP fix. See /usr/local/sbin/rdp-guard for the why.
+#
+# Ordered Before xrdp AND the display manager: xrdp must lose the race for
+# 3389, and GDM autologin is what starts the user's gnome-remote-desktop, so
+# by the time that daemon binds, xrdp is already masked and stopped.
+[Unit]
+Description=Keep xrdp masked so gnome-remote-desktop owns RDP port 3389
+Before=xrdp.service xrdp-sesman.service display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rdp-guard
+
+[Install]
+WantedBy=multi-user.target

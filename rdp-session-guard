@@ -1,0 +1,105 @@
+#!/bin/bash
+# rdp-session-guard: after login, make sure gnome-remote-desktop is actually
+# serving RDP on 3389 with credentials it can read. Runs as the desktop user
+# (systemd user unit).
+#
+# WHY a second guard on top of rdp-guard (root): even with xrdp masked, the
+# failure that remains is "grd came up on 3390". gnome-remote-desktop
+# has "Negotiate port: yes", so if 3389 is taken for even a moment when it
+# starts, it binds 3390 and stays there until restarted. This notices that and
+# restarts it the supported way.
+#
+# WHY systemctl --user and not pkill: grd is a systemd user service. Killing
+# the process leaves nothing to respawn it; restarting the unit rebinds cleanly.
+# This must run inside the user's systemd manager (not root), which is why it's
+# a user unit and not part of rdp-guard.
+#
+# Everything is logged to the journal:  journalctl --user -u rdp-session-guard
+
+set -u
+
+WANT_PORT=3389
+SCHEMA=org.gnome.RemoteDesktop.RdpCredentials
+
+# Port grd is listening on, or empty. `ss -p` shows process names for our own
+# processes without root, and grd runs as this user, so no sudo needed.
+grd_port() {
+    ss -H -tlnp 2>/dev/null | awk '/"gnome-remote-de"/ { n = split($4, a, ":"); print a[n]; exit }'
+}
+
+# True if anything at all is listening on 3389. No -p here: we only care
+# whether the port is busy, and a root-owned xrdp wouldn't show a name anyway.
+port_busy() {
+    [ -n "$(ss -H -tln "sport = :$1" 2>/dev/null)" ]
+}
+
+# --- 1. Wait for grd to finish starting (it binds a few seconds after login) ---
+port=""
+for _ in $(seq 1 45); do
+    port=$(grd_port)
+    [ -n "$port" ] && break
+    sleep 2
+done
+
+if [ -z "$port" ]; then
+    echo "gnome-remote-desktop is not listening on any port after 90s; starting it"
+    systemctl --user start gnome-remote-desktop.service
+    sleep 3
+    port=$(grd_port)
+fi
+
+# --- 2. If it lost the race and landed on 3390 (or anything else), move it ---
+if [ -n "$port" ] && [ "$port" != "$WANT_PORT" ]; then
+    echo "gnome-remote-desktop is on port $port, not $WANT_PORT (something else held $WANT_PORT when it started)"
+
+    # Give rdp-guard's stop of xrdp time to release the port. Restarting grd
+    # while 3389 is still held would just land it on 3390 again.
+    for _ in $(seq 1 30); do
+        port_busy "$WANT_PORT" || break
+        sleep 2
+    done
+
+    if port_busy "$WANT_PORT"; then
+        echo "port $WANT_PORT is still held by another process; NOT restarting grd. Check: sudo ss -tlnp | grep :$WANT_PORT"
+    else
+        systemctl --user restart gnome-remote-desktop.service
+        sleep 3
+        port=$(grd_port)
+        echo "restarted gnome-remote-desktop; now listening on port ${port:-<none>}"
+    fi
+fi
+
+# --- 3. Can grd actually read its RDP credentials? ---
+# WHY: grd stores them in the GNOME keyring. With GDM autologin, a
+# password-protected keyring is never unlocked, so grd sees no credentials and
+# denies every client ("Credentials are not set, denying client"). install.sh
+# moves the credential into an unencrypted "RDP" keyring to fix that; this check
+# catches it if it ever regresses (e.g. someone re-runs grdctl rdp
+# set-credentials, which writes into the default, locked keyring).
+#
+# WHY look at WHICH keyring, not locked/unlocked: an unencrypted keyring still
+# reports "locked" until something first opens it, and grd opens it itself when
+# a client connects. So right after login the credential always looks locked
+# (an earlier version of this check warned falsely while RDP worked fine). In the RDP keyring it's
+# fine either way; only a copy that exists solely in another keyring is a problem.
+# SearchItems returns (unlocked_paths, locked_paths), item paths are
+# .../collection/<keyring>/<n>; we only read paths, never the secret.
+#
+# WHY the retry loop: this unit starts within seconds of gnome-keyring-daemon,
+# which may not answer yet; wait until it reports the item.
+cred_keyrings() {
+    busctl --user --json=short call org.freedesktop.secrets /org/freedesktop/secrets \
+        org.freedesktop.Secret.Service SearchItems 'a{ss}' 1 xdg:schema "$SCHEMA" 2>/dev/null \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(" ".join(p.split("/")[-2] for p in d[0] + d[1]))' 2>/dev/null
+}
+for _ in $(seq 1 30); do
+    keyrings=$(cred_keyrings)
+    [ -n "$keyrings" ] && break
+    sleep 2
+done
+
+case " $keyrings " in
+    *" RDP "*) echo "OK: RDP credentials in the RDP keyring; gnome-remote-desktop on port ${port:-<none>}" ;;
+    "  ")      echo "WARNING: no RDP credentials stored; set them with: grdctl rdp set-credentials $(id -un), then re-run rdp-keyring-move.py" ;;
+    *)         echo "WARNING: RDP credentials are only in keyring(s) [$keyrings], which autologin leaves locked; clients will be denied. Re-run rdp-keyring-move.py" ;;
+esac
