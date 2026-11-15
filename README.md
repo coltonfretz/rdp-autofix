@@ -2,7 +2,22 @@
 
 Keeps GNOME Remote Desktop working across reboots on an Ubuntu machine that logs in automatically.
 
-> Built with Claude for my own machine and shared as is. It works on my setup (Ubuntu 26.04, GNOME 50, gnome-remote-desktop 50.2, GDM autologin). Issues and pull requests are welcome, and I'll update it as needed.
+> Built with Claude for my own machine and shared as is. Issues and pull requests are welcome, and I'll update it as needed.
+
+## Tested on
+
+Last checked **2026-11-15**, working: after a reboot with automatic login, the credential was readable and gnome-remote-desktop was on port 3389.
+
+| | Version |
+|---|---|
+| Ubuntu | 26.04.1 LTS |
+| Linux kernel | 7.0.0-43-generic |
+| GNOME Shell | 50.1 |
+| gnome-remote-desktop | 50.2-0ubuntu0.1 |
+| GDM | 50.1-0ubuntu0.1, automatic login on |
+| python3-dbus | 1.4.0 |
+
+None of it depends on the kernel: it works with GNOME's keyring, gnome-remote-desktop and systemd, so what matters most is the gnome-remote-desktop version. If yours is newer and it still works (or doesn't), an issue saying so helps.
 
 ## The problem
 
